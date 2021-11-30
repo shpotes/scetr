@@ -12,13 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Feature extractor class for DETR."""
+"""Feature extractor class for SCETR."""
 
 import io
 import pathlib
 from collections import defaultdict
 from typing import Dict, List, Optional, Union
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -43,10 +44,20 @@ logger = logging.get_logger(__name__)
 
 ImageInput = Union[Image.Image, np.ndarray, "torch.Tensor", List[Image.Image], List[np.ndarray], List["torch.Tensor"]]
 
+def boxes_to_center_with_angle_format(boxes: np.ndarray) -> np.ndarray:
+    """
+    Converts the given boxes from the format to the format (x_center, y_center, w, h, angle).
+    """
+    output_boxes = []
+    for i in range(boxes.shape[0]):
+        (x, y), (w, h), a = cv2.minAreaRect(boxes[i].astype(np.float32))
+        output_boxes.append([x, y, w, h, a])
+
+    return np.array(output_boxes)
 
 class ScetrFeatureExtractor(FeatureExtractionMixin, ImageFeatureExtractionMixin):
     r"""
-    Constructs a DETR feature extractor.
+    Constructs a SCETR feature extractor.
 
     This feature extractor inherits from :class:`~transformers.FeatureExtractionMixin` which contains most of the main
     methods. Users should refer to this superclass for more information regarding those methods.
@@ -78,7 +89,8 @@ class ScetrFeatureExtractor(FeatureExtractionMixin, ImageFeatureExtractionMixin)
         self,
         do_resize=True,
         size=800,
-        max_size=1333,
+        max_size=6000,
+        return_oriented_box=True,
         do_normalize=True,
         image_mean=None,
         image_std=None,
@@ -89,16 +101,16 @@ class ScetrFeatureExtractor(FeatureExtractionMixin, ImageFeatureExtractionMixin)
         self.size = size
         self.max_size = max_size
         self.do_normalize = do_normalize
+        self.return_oriented_box = return_oriented_box
         self.image_mean = image_mean if image_mean is not None else [0.485, 0.456, 0.406]  # ImageNet mean
         self.image_std = image_std if image_std is not None else [0.229, 0.224, 0.225]  # ImageNet std
 
     def prepare(self, image, target):
-        image, target = self.prepare_coco_detection(image, target)
+        image, target = self.prepare_coco_detection(image, target, self.return_oriented_box)
         return image, target
 
     # inspired by https://github.com/facebookresearch/detr/blob/master/datasets/coco.py#L50
-    def prepare_coco_detection(self, image, target):
-        # TODO: replace this with a more general function
+    def prepare_coco_detection(self, image, target, return_oriented_box=False):
         """
         Convert the target in COCO format into the format expected by DETR.
         """
@@ -110,46 +122,29 @@ class ScetrFeatureExtractor(FeatureExtractionMixin, ImageFeatureExtractionMixin)
         # get all COCO annotations for the given image
         anno = target["annotations"]
 
-        anno = [obj for obj in anno if "iscrowd" not in obj or obj["iscrowd"] == 0]
-
         boxes = [obj["bbox"] for obj in anno]
         # guard against no boxes via resizing
         boxes = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
         boxes[:, 2:] += boxes[:, :2]
         boxes[:, 0::2] = boxes[:, 0::2].clip(min=0, max=w)
         boxes[:, 1::2] = boxes[:, 1::2].clip(min=0, max=h)
-
-        classes = [obj["category_id"] for obj in anno]
-        classes = np.asarray(classes, dtype=np.int64)
-
-        keypoints = None
-        if anno and "keypoints" in anno[0]:
-            keypoints = [obj["keypoints"] for obj in anno]
-            keypoints = np.asarray(keypoints, dtype=np.float32)
-            num_keypoints = keypoints.shape[0]
-            if num_keypoints:
-                keypoints = keypoints.reshape((-1, 3))
+        
+        if return_oriented_box:
+            oriented_boxes = np.int0(np.stack([cv2.boxPoints(obj["min_rectangle"]) for obj in anno]))
 
         keep = (boxes[:, 3] > boxes[:, 1]) & (boxes[:, 2] > boxes[:, 0])
         boxes = boxes[keep]
-        classes = classes[keep]
-
-        if keypoints is not None:
-            keypoints = keypoints[keep]
 
         target = {}
         target["boxes"] = boxes
-        target["class_labels"] = classes
-
         target["image_id"] = image_id
-        if keypoints is not None:
-            target["keypoints"] = keypoints
+        
+        if return_oriented_box:
+            target["or_boxes"] = oriented_boxes
 
         # for conversion to coco api
         area = np.asarray([obj["area"] for obj in anno], dtype=np.float32)
-        iscrowd = np.asarray([obj["iscrowd"] if "iscrowd" in obj else 0 for obj in anno], dtype=np.int64)
         target["area"] = area[keep]
-        target["iscrowd"] = iscrowd[keep]
 
         target["orig_size"] = np.asarray([int(h), int(w)], dtype=np.int64)
         target["size"] = np.asarray([int(h), int(w)], dtype=np.int64)
@@ -214,6 +209,11 @@ class ScetrFeatureExtractor(FeatureExtractionMixin, ImageFeatureExtractionMixin)
             scaled_area = area * (ratio_width * ratio_height)
             target["area"] = scaled_area
 
+        if "or_boxes" in target:
+            boxes = target["or_boxes"]
+            scaled_boxes = boxes * np.asarray([[[ratio_width, ratio_height]]], dtype=np.float32)
+            target["or_boxes"] = scaled_boxes
+
         w, h = size
         target["size"] = np.asarray([h, w], dtype=np.int64)
 
@@ -238,6 +238,12 @@ class ScetrFeatureExtractor(FeatureExtractionMixin, ImageFeatureExtractionMixin)
             boxes = corners_to_center_format(boxes)
             boxes = boxes / np.asarray([w, h, w, h], dtype=np.float32)
             target["boxes"] = boxes
+
+        if "or_boxes" in target:
+            boxes = target["or_boxes"]
+            boxes = boxes_to_center_with_angle_format(boxes)
+            boxes = boxes / np.asarray([w, h, w, h, 1], dtype=np.float32)
+            target["or_boxes"] = boxes
 
         return image, target
 
