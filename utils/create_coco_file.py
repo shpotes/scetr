@@ -1,4 +1,5 @@
 from typing import Any, Dict
+from itertools import chain
 import argparse
 from datetime import datetime
 import json
@@ -36,15 +37,15 @@ def get_image_info(img: Path) -> Dict[str, Any]:
 def get_annon(line: str, image_id: int) -> Dict[str, Any]:
     pts = np.array(line.split(","), dtype=np.int32).reshape(-1, 2)
 
-    xmin = pts[:, 0].min()
-    xmax = pts[:, 0].max()
-    ymin = pts[:, 1].min()
-    ymax = pts[:, 1].max()
+    xmin = int(pts[:, 0].min())
+    xmax = int(pts[:, 0].max())
+    ymin = int(pts[:, 1].min())
+    ymax = int(pts[:, 1].max())
 
     area = (xmax - xmin) * (ymax - ymin)
     bbox = [xmin, ymin, xmax - xmin, ymax - ymin]
     rec = cv2.minAreaRect(pts)
-    segmentation = pts.reshape(-1)
+    segmentation = pts.reshape(-1).tolist()
     
     return {
         "image_id": image_id,
@@ -62,23 +63,24 @@ def get_image_annotation_without_id(annon: Path) -> Dict[str, Any]:
     return [get_annon(line, image_id) for line in content.split("\n") if line]
 
 def drive_to_coco_format(image_dir: Path, annon_dir: Path) -> Dict[str, Dict[str, Any]]:
-    availabel_images = {img for img in image_dir.iterdir() if img.is_file()} 
-    availabel_labels = {annon for annon in annon_dir.iterdir() if annon.is_file()}
+    availabel_images = {img.stem for img in image_dir.iterdir() if img.is_file()} 
+    availabel_labels = {annon.stem for annon in annon_dir.iterdir() if annon.is_file()}
 
-    total_imgs = len(list(image_dir.iterdir()))
+    total_imgs = len(availabel_images)
     images = [
         get_image_info(img) for img in tqdm(image_dir.iterdir(), total=total_imgs) 
         if img.stem in availabel_labels
     ]
 
-    total_annons = len(list(annon_dir.iterdir()))
-    annotations = []
-    for _id, annon in tqdm(enumerate(annon_dir.iterdir()), total=total_annons):
-        if annon.stem not in availabel_images:
-            continue
-        annotations = get_image_annotation_without_id(annon)
-        annotations["id"] = _id
-    
+    total_annons = len(availabel_labels)
+    annotations = list(chain.from_iterable(
+        get_image_annotation_without_id(annon) for annon in tqdm(annon_dir.iterdir(), total=total_annons)
+        if annon.stem in availabel_images
+    ))
+
+    for _id, annon in enumerate(annotations):
+        annon["id"] = _id
+
     return {
         "info": get_info(),
         "images": images,
