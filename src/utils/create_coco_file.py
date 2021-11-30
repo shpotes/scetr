@@ -48,7 +48,7 @@ def get_annon(line: str, image_id: int) -> Dict[str, Any]:
     segmentation = pts.reshape(-1).tolist()
     
     return {
-        "image_id": image_id,
+        "image_id": int(image_id),
         "bbox": bbox,
         "segmentation": segmentation,
         "area": area,
