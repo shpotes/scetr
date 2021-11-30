@@ -3,3 +3,4 @@ transformers==4.12.5
 pytorch-lightning==1.5.3
 wandb==0.12.7
 opencv-python==4.5.4.60
+pycocotools
