@@ -15,7 +15,6 @@
 """Feature extractor class for SCETR."""
 
 import io
-import pathlib
 from collections import defaultdict
 from typing import Dict, List, Optional, Union
 
@@ -25,6 +24,7 @@ from PIL import Image
 
 from transformers.feature_extraction_utils import BatchFeature, FeatureExtractionMixin
 from transformers.models.detr.feature_extraction_detr import (
+    ImageInput,
     corners_to_center_format, 
     center_to_corners_format, 
     id_to_rgb,
@@ -41,17 +41,15 @@ if is_torch_available():
 
 logger = logging.get_logger(__name__)
 
-
-ImageInput = Union[Image.Image, np.ndarray, "torch.Tensor", List[Image.Image], List[np.ndarray], List["torch.Tensor"]]
-
-def boxes_to_center_with_angle_format(boxes: np.ndarray) -> np.ndarray:
+def boxes_to_center_with_trig_format(boxes: np.ndarray) -> np.ndarray:
     """
     Converts the given boxes from the format to the format (x_center, y_center, w, h, angle).
     """
     output_boxes = []
     for i in range(boxes.shape[0]):
-        (x, y), (w, h), a = cv2.minAreaRect(boxes[i].astype(np.float32))
-        output_boxes.append([x, y, w, h, a])
+        (x, y), (h, w), a = cv2.minAreaRect(boxes[i].astype(np.float32))
+        a = np.deg2rad(a)
+        output_boxes.append([x, y, w, h, np.cos(a), np.sin(a)])
 
     return np.array(output_boxes)
 
@@ -241,8 +239,8 @@ class ScetrFeatureExtractor(FeatureExtractionMixin, ImageFeatureExtractionMixin)
 
         if "or_boxes" in target:
             boxes = target["or_boxes"]
-            boxes = boxes_to_center_with_angle_format(boxes)
-            boxes = boxes / np.asarray([w, h, w, h, 1], dtype=np.float32)
+            boxes = boxes_to_center_with_trig_format(boxes)
+            boxes = boxes / np.asarray([w, h, w, h, 1, 1], dtype=np.float32)
             target["or_boxes"] = boxes
 
         return image, target
@@ -406,13 +404,13 @@ class ScetrFeatureExtractor(FeatureExtractionMixin, ImageFeatureExtractionMixin)
                 mask = np.zeros((h, w), dtype=np.int64)
                 mask[: image.shape[1], : image.shape[2]] = True
                 pixel_mask.append(mask)
-            images = padded_images
+            images = np.array(padded_images)
 
         # return as BatchFeature
         data = {}
         data["pixel_values"] = images
         if pad_and_return_pixel_mask:
-            data["pixel_mask"] = pixel_mask
+            data["pixel_mask"] = np.array(pixel_mask)
         encoded_inputs = BatchFeature(data=data, tensor_type=return_tensors)
 
         if annotations is not None:
